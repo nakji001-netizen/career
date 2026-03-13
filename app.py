@@ -58,7 +58,7 @@ with st.sidebar:
     except Exception:
         api_key = None
     
-    # 모델을 gemini-1.5-flash로 고정
+    # 모델을 가장 안정적인 'gemini-1.5-flash'로 고정
     selected_model = "gemini-1.5-flash"
     st.info(f"사용 중인 모델: {selected_model}")
     
@@ -92,8 +92,8 @@ if submit_btn:
             model = genai.GenerativeModel(selected_model)
             
             # 프롬프트 구성
-            system_prompt = "당신은 고등학생을 위한 친절하고 전문적인 진로 상담가입니다. JSON 형식으로만 응답하세요."
             user_prompt = f"""
+            당신은 고등학생을 위한 친절하고 전문적인 진로 상담가입니다. 
             사용자가 입력한 정보는 다음과 같습니다.
             - 희망 직업: {job}
             - 관심 분야: {interest}
