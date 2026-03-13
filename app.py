@@ -58,7 +58,7 @@ with st.sidebar:
     except Exception:
         api_key = None
     
-    # 모델을 가장 안정적인 'gemini-1.5-flash'로 고정
+    # 모델을 가장 최신/안정적인 이름으로 고정
     selected_model = "gemini-1.5-flash"
     st.info(f"사용 중인 모델: {selected_model}")
     
@@ -89,7 +89,9 @@ if submit_btn:
         try:
             # GenAI 설정
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(selected_model)
+            
+            # 모델 인스턴스 생성 (Flash 모델 고정)
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
             
             # 프롬프트 구성
             user_prompt = f"""
