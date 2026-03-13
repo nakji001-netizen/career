@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-import os
 
 # --- 페이지 설정 ---
 st.set_page_config(
@@ -48,7 +47,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 사이드바: 설정 ---
+# --- 사이드바: 설정 및 자동 모델 선택 ---
 with st.sidebar:
     st.header("⚙️ 설정")
     
@@ -58,13 +57,35 @@ with st.sidebar:
     except Exception:
         api_key = None
     
-    # 모델을 가장 최신/안정적인 이름으로 고정
-    selected_model = "gemini-1.5-flash"
-    st.info(f"사용 중인 모델: {selected_model}")
-    
-    # API 키가 없을 때만 경고 표시
+    selected_model = None
+
+    # API 키가 있을 때만 모델 목록 불러오기 실행
     if not api_key:
-        st.error("Secrets 설정이 필요합니다.")
+        st.error("⚠️ Secrets 설정이 필요합니다. (API 키 누락)")
+    else:
+        try:
+            # GenAI 설정 (모델 목록을 불러오기 위해 먼저 인증)
+            genai.configure(api_key=api_key)
+            
+            # API에서 지원하는 전체 모델 목록 가져오기
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            # 'flash'가 포함된 모델만 필터링하고 실험버전(exp) 제외 후 정렬 (최신 버전이 맨 뒤로 옴)
+            flash_models = [m for m in available_models if 'flash' in m.lower() and 'exp' not in m.lower()]
+            
+            if flash_models:
+                # 가장 마지막(최신) 모델 선택 후 'models/' 접두사 제거
+                selected_model = sorted(flash_models)[-1].replace("models/", "")
+            else:
+                # 안전망: 검색 실패 시 기본값 (현재 시점 최신 안정화 버전)
+                selected_model = "gemini-2.5-flash"
+                
+            st.success("✅ API 연결 성공!")
+            st.info(f"✨ 자동 선택된 최신 모델:\n**{selected_model}**")
+            
+        except Exception as e:
+            st.error(f"모델 목록 로드 실패: {str(e)}")
+            selected_model = "gemini-2.5-flash"
 
 # --- 메인 화면 ---
 st.markdown('<div class="main-title">진로 탐색기</div>', unsafe_allow_html=True)
@@ -83,15 +104,14 @@ with st.form("career_form"):
 if submit_btn:
     if not api_key:
         st.error("⚠️ API Key가 설정되지 않았습니다. Streamlit Cloud의 Secrets 설정을 확인해주세요.")
+    elif not selected_model:
+        st.error("⚠️ 사용할 수 있는 AI 모델을 찾지 못했습니다.")
     elif not (job and interest and hobby and subject):
         st.warning("⚠️ 모든 항목을 입력해주세요.")
     else:
         try:
-            # GenAI 설정
-            genai.configure(api_key=api_key)
-            
-            # 모델 인스턴스 생성 (Flash 모델 고정)
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            # 모델 인스턴스 생성 (위에서 자동 검색된 최신 모델 사용)
+            model = genai.GenerativeModel(model_name=selected_model)
             
             # 프롬프트 구성
             user_prompt = f"""
@@ -110,13 +130,13 @@ if submit_btn:
                     "majorName": "학과명",
                     "introduction": "학과 소개",
                     "reason": "추천 이유",
-                    "curriculum": ["과목1", "과목2", ...],
-                    "career": ["직업1", "직업2", ...]
+                    "curriculum": ["과목1", "과목2"],
+                    "career": ["직업1", "직업2"]
                 }}
             ]
             """
             
-            with st.spinner(f"AI가 분석 중입니다..."):
+            with st.spinner(f"AI({selected_model})가 분석 중입니다..."):
                 response = model.generate_content(
                     user_prompt,
                     generation_config={"response_mime_type": "application/json"}
@@ -130,7 +150,7 @@ if submit_btn:
                 st.session_state['recommendations'] = recommendations
                 
         except Exception as e:
-            st.error(f"오류가 발생했습니다: {str(e)}")
+            st.error(f"결과를 생성하는 중 오류가 발생했습니다: {str(e)}")
 
 # --- 결과 표시 및 다운로드 ---
 if 'recommendations' in st.session_state:
