@@ -14,7 +14,6 @@ st.markdown("""
     <style>
     .main-title { font-size: 2.5rem; font-weight: bold; color: #1e3a8a; text-align: center; margin-bottom: 0.5rem; }
     .sub-title { font-size: 1.1rem; color: #4b5563; text-align: center; margin-bottom: 2rem; }
-    /* HTML 카드 대신 깔끔한 강조 색상만 남김 */
     .section-title { font-weight: bold; color: #374151; margin-top: 1rem; }
     </style>
 """, unsafe_allow_html=True)
@@ -29,7 +28,7 @@ def get_best_model():
         
         if flash_models:
             return flash_models[-1].replace("models/", "")
-        return "gemini-2.5-flash" # 개선: Fallback 버전 최신화
+        return "gemini-2.5-flash"
     except Exception:
         return "gemini-2.5-flash"
 
@@ -57,14 +56,16 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
     model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
     prompt = f"희망직업: {job}, 관심분야: {interest}, 취미: {hobby}, 선호과목: {subject} 정보를 바탕으로 적합한 대학교 학과 3개를 추천해줘."
 
-    # 개선: 429 에러(Rate Limit) 방어를 위한 재시도 로직
     max_retries = 3
     for i in range(max_retries):
         try:
             response = model.generate_content(prompt)
             if not response.text:
                 raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
+            # 개선 3: JSON 디코딩 에러 방어
             return json.loads(response.text)
+        except json.JSONDecodeError:
+            raise ValueError("AI 응답을 분석하는 중 오류가 발생했습니다. 다시 시도해 주세요.")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
@@ -73,18 +74,23 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
                 raise e
 
 # --- 3. 사이드바: API 설정 ---
+# 개선 2: 변수 초기화를 통해 잠재적인 NameError 방지
+api_key = None
+selected_model = "모델 확인 불가"
+
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-        
-        selected_model = get_best_model()
-        st.success("✅ API 연결 성공")
-        st.info(f"🤖 사용 모델: **{selected_model}**")
-    except Exception:
-        st.error("⚠️ API 키를 확인해주세요.")
-        api_key = None
+        api_key = st.secrets.get("GOOGLE_API_KEY")
+        if not api_key:
+            st.error("⚠️ Secrets에 API 키가 없습니다.")
+        else:
+            genai.configure(api_key=api_key)
+            selected_model = get_best_model()
+            st.success("✅ API 연결 성공")
+            st.info(f"🤖 사용 모델: **{selected_model}**")
+    except Exception as e:
+        st.error(f"⚠️ API 연결 오류: {e}")
 
 # --- 4. 메인 화면: 입력 폼 ---
 st.markdown('<div class="main-title">🎓 진로 탐색기</div>', unsafe_allow_html=True)
@@ -104,13 +110,13 @@ with st.form("career_form"):
 # --- 5. 분석 실행 및 결과 표시 ---
 if submit_btn:
     if not api_key:
-        st.error("API 키가 설정되지 않았습니다.")
-    elif not (job and interest and hobby and subject):
-        st.warning("모든 항목을 입력해 주세요.")
+        st.error("API 키가 설정되지 않았습니다. 좌측 사이드바 설정을 확인해 주세요.")
+    # 개선 1: .strip()을 사용해 공백만 입력한 경우를 빈칸으로 간주하여 차단
+    elif not (job.strip() and interest.strip() and hobby.strip() and subject.strip()):
+        st.warning("⚠️ 모든 항목에 내용을 정확히 입력해 주세요.")
     else:
         with st.spinner(f"AI({selected_model})가 최적의 진로를 분석 중입니다..."):
             try:
-                # 함수 호출 (캐싱 적용됨)
                 recommendations = get_career_recommendations(selected_model, job, interest, hobby, subject)
                 st.session_state['recommendations'] = recommendations
             except ValueError as ve:
@@ -129,7 +135,6 @@ if 'recommendations' in st.session_state:
     report_text = "=== 진로 탐색 결과 보고서 ===\n\n"
     
     for rec in data:
-        # 개선: Streamlit 네이티브 UI (st.container) 적용
         with st.container(border=True):
             st.markdown(f"### 📍 {rec['majorName']}")
             st.markdown(rec['introduction'])
