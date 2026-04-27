@@ -3,7 +3,7 @@ import google.generativeai as genai
 import json
 import time
 import requests
-import threading  # 구글 시트 백그라운드 저장을 위한 라이브러리 추가
+import threading
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(
@@ -26,14 +26,11 @@ def get_best_model():
     """매번 검색하지 않고 하루에 한 번만 최신 모델을 탐색하여 기억함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 'flash' 포함, 'lite' 제외, 'exp' 제외하여 검증된 일반 모델 필터링
         flash_models = sorted([
             m.replace("models/", "") 
             for m in available_models 
             if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
         ])
-        
         if flash_models:
             return flash_models[-1]
         return "gemini-1.5-flash-latest"
@@ -72,7 +69,7 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
                 raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
             return json.loads(response.text)
         except json.JSONDecodeError as e:
-            raise ValueError(f"AI 응답 형식이 올바르지 않습니다. (다시 시도해 주세요. 에러: {e})")
+            raise ValueError(f"AI 응답 형식이 올바르지 않습니다. (에러: {e})")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
@@ -81,14 +78,12 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
                 raise e
 
 def save_to_google_sheet_background(webhook_url, payload):
-    """결과를 구글 시트로 전송 (화면 멈춤 없이 백그라운드에서 실행)"""
+    """결과를 구글 시트로 백그라운드 전송"""
     def send_request():
         try:
             requests.post(webhook_url, json=payload)
         except Exception:
-            pass # 백그라운드 작업이므로 에러가 나도 메인 화면을 멈추지 않음
-
-    # 새로운 스레드를 만들어서 전송 업무를 맡기고 바로 복귀
+            pass
     thread = threading.Thread(target=send_request)
     thread.start()
 
@@ -102,24 +97,21 @@ with st.sidebar:
     try:
         api_key = st.secrets.get("GOOGLE_API_KEY")
         webhook_url = st.secrets.get("WEBHOOK_URL")
-        
-        if not api_key:
-            st.error("⚠️ Secrets에 API 키가 없습니다.")
-        else:
+        if api_key:
             genai.configure(api_key=api_key)
             selected_model = get_best_model()
             st.success("✅ AI API 연결 성공")
             st.info(f"🤖 사용 모델: **{selected_model}**")
-            
-        if not webhook_url: 
-            st.warning("⚠️ 구글 시트 웹훅 URL이 없습니다. (자동 수합 비활성화)")
         else:
+            st.error("⚠️ API 키가 없습니다.")
+        if webhook_url:
             st.success("✅ 구글 시트 연결 성공")
-            
+        else:
+            st.warning("⚠️ 웹훅 URL이 없습니다.")
     except Exception as e:
         st.error(f"⚠️ 설정 오류: {e}")
 
-# --- 4. 메인 화면: 입력 폼 ---
+# --- 4. 메인 화면 ---
 st.markdown('<div class="main-title">🎓 진로 탐색기</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">당신의 꿈을 데이터로 분석하여 최적의 학과를 제안합니다.</div>', unsafe_allow_html=True)
 
@@ -130,7 +122,6 @@ with st.form("career_form"):
         student_id = st.text_input("🔢 학번", placeholder="예: 10101")
     with col_info2:
         student_name = st.text_input("👤 이름", placeholder="예: 홍길동")
-        
     st.markdown("**탐색 정보**")
     col1, col2 = st.columns(2)
     with col1:
@@ -139,73 +130,49 @@ with st.form("career_form"):
     with col2:
         hobby = st.text_input("🎨 취미 및 특기", placeholder="예: 프라모델 조립")
         subject = st.text_input("📚 선호 과목", placeholder="예: 물리, 수학")
-    
     submit_btn = st.form_submit_button("학과 추천받기 ✨", type="primary", use_container_width=True)
 
-# --- 5. 분석 실행 및 결과 표시 ---
+# --- 5. 분석 및 결과 ---
 if submit_btn:
     if not api_key:
-        st.error("API 키가 설정되지 않았습니다. 좌측 사이드바 설정을 확인해 주세요.")
+        st.error("API 키 설정을 확인해주세요.")
     elif not (student_id.strip() and student_name.strip() and job.strip() and interest.strip() and hobby.strip() and subject.strip()):
-        st.warning("⚠️ 학생 정보 및 탐색 항목을 모두 정확히 입력해 주세요.")
+        st.warning("⚠️ 모든 항목을 입력해주세요.")
     else:
-        with st.spinner(f"AI({selected_model})가 최적의 진로를 분석 중입니다..."):
+        with st.spinner(f"AI가 진로를 분석 중입니다..."):
             try:
-                # AI 추천 받기
                 recommendations = get_career_recommendations(selected_model, job, interest, hobby, subject)
                 st.session_state['recommendations'] = recommendations
-                
-                # 구글 시트에 자동 저장 로직 (백그라운드)
                 if webhook_url:
                     payload = {
-                        "student_id": student_id,
-                        "student_name": student_name,
-                        "job": job,
-                        "interest": interest,
-                        "hobby": hobby,
-                        "subject": subject,
+                        "student_id": student_id, "student_name": student_name, "job": job,
+                        "interest": interest, "hobby": hobby, "subject": subject,
                         "rec1": recommendations[0]['majorName'] if len(recommendations) > 0 else "",
                         "rec2": recommendations[1]['majorName'] if len(recommendations) > 1 else "",
                         "rec3": recommendations[2]['majorName'] if len(recommendations) > 2 else ""
                     }
                     save_to_google_sheet_background(webhook_url, payload)
-                    st.toast("✅ 분석 완료! (결과는 선생님 시트로 안전하게 전송 중입니다)", icon="🚀")
+                    st.toast("✅ 결과가 선생님 시트로 전송 중입니다!", icon="🚀")
+                
+                # 풍선 효과 추가
+                st.balloons()
 
-            except ValueError as ve:
-                st.error(f"⚠️ {ve}")
             except Exception as e:
-                if "429" in str(e):
-                    st.error("🚀 현재 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
-                else:
-                    st.error(f"오류가 발생했습니다: {str(e)}")
+                st.error(f"오류 발생: {e}")
 
-# --- 6. 결과 렌더링 및 다운로드 ---
 if 'recommendations' in st.session_state:
     data = st.session_state['recommendations']
     st.divider()
-    
     report_text = "=== 진로 탐색 결과 보고서 ===\n\n"
-    
     for rec in data:
         with st.container(border=True):
             st.markdown(f"### 📍 {rec['majorName']}")
             st.markdown(rec['introduction'])
-            
             st.markdown("#### ✨ 추천 이유")
             st.info(rec['reason'])
-            
             st.markdown("#### 📚 주요 커리큘럼")
             st.caption(f"{', '.join(rec['curriculum'])}")
-            
             st.markdown("#### 🚀 졸업 후 진로")
             st.caption(f"{', '.join(rec['career'])}")
-        
         report_text += f"▶ 학과: {rec['majorName']}\n- 이유: {rec['reason']}\n- 진로: {', '.join(rec['career'])}\n\n"
-
-    st.download_button(
-        label="📄 결과 보고서(.txt) 개인 소장용 다운로드",
-        data=report_text,
-        file_name="career_report.txt",
-        mime="text/plain",
-        use_container_width=True
-    )
+    st.download_button(label="📄 결과 보고서 다운로드", data=report_text, file_name="career_report.txt", use_container_width=True)
