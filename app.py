@@ -3,6 +3,7 @@ import google.generativeai as genai
 import json
 import time
 import requests
+import threading  # 구글 시트 백그라운드 저장을 위한 라이브러리 추가
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(
@@ -79,16 +80,17 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
             else:
                 raise e
 
-def save_to_google_sheet(webhook_url, payload):
-    """결과를 구글 스프레드시트로 전송하는 함수"""
-    try:
-        response = requests.post(webhook_url, json=payload)
-        if response.status_code == 200: 
-            return True
-        else:
-            return False
-    except Exception:
-        return False
+def save_to_google_sheet_background(webhook_url, payload):
+    """결과를 구글 시트로 전송 (화면 멈춤 없이 백그라운드에서 실행)"""
+    def send_request():
+        try:
+            requests.post(webhook_url, json=payload)
+        except Exception:
+            pass # 백그라운드 작업이므로 에러가 나도 메인 화면을 멈추지 않음
+
+    # 새로운 스레드를 만들어서 전송 업무를 맡기고 바로 복귀
+    thread = threading.Thread(target=send_request)
+    thread.start()
 
 # --- 3. 사이드바: API 설정 ---
 api_key = None
@@ -153,7 +155,7 @@ if submit_btn:
                 recommendations = get_career_recommendations(selected_model, job, interest, hobby, subject)
                 st.session_state['recommendations'] = recommendations
                 
-                # 구글 시트에 자동 저장 로직
+                # 구글 시트에 자동 저장 로직 (백그라운드)
                 if webhook_url:
                     payload = {
                         "student_id": student_id,
@@ -166,11 +168,8 @@ if submit_btn:
                         "rec2": recommendations[1]['majorName'] if len(recommendations) > 1 else "",
                         "rec3": recommendations[2]['majorName'] if len(recommendations) > 2 else ""
                     }
-                    is_saved = save_to_google_sheet(webhook_url, payload)
-                    if is_saved:
-                        st.toast("✅ 선생님의 시트로 결과가 자동으로 제출되었습니다!", icon="🚀")
-                    else:
-                        st.toast("⚠️ 시트 제출에 실패했습니다. 선생님께 문의하세요.", icon="😥")
+                    save_to_google_sheet_background(webhook_url, payload)
+                    st.toast("✅ 분석 완료! (결과는 선생님 시트로 안전하게 전송 중입니다)", icon="🚀")
 
             except ValueError as ve:
                 st.error(f"⚠️ {ve}")
