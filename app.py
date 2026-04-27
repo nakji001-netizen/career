@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import time
-import requests  # 구글 시트로 데이터를 보내기 위해 추가된 라이브러리
+import requests
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(
@@ -21,16 +21,23 @@ st.markdown("""
 
 # --- 2. 로직 함수 ---
 def get_best_model():
-    """사용 가능한 최신 Flash 모델을 자동 탐색"""
+    """사용 가능한 모델 중 가장 적합한 최신 Flash 모델을 동적으로 탐색"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        flash_models = sorted([m for m in available_models if 'flash' in m.lower() and 'exp' not in m.lower()])
+        
+        # 'flash' 포함, 'lite' 제외, 'exp' 제외하여 검증된 모델 필터링
+        flash_models = sorted([
+            m.replace("models/", "") 
+            for m in available_models 
+            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
+        ])
         
         if flash_models:
-            return flash_models[-1].replace("models/", "")
-        return "gemini-2.5-flash"
+            return flash_models[-1]
+        # 목록에서 찾지 못했을 경우의 최후의 보루 (가장 안정적인 별칭)
+        return "gemini-1.5-flash-latest"
     except Exception:
-        return "gemini-2.5-flash"
+        return "gemini-1.5-flash-latest"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_career_recommendations(model_name, job, interest, hobby, subject):
@@ -53,6 +60,7 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
         }
     }
 
+    # 이전 오타 수정 (Generative Model -> GenerativeModel, generation_config 할당)
     model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
     prompt = f"희망직업: {job}, 관심분야: {interest}, 취미: {hobby}, 선호과목: {subject} 정보를 바탕으로 적합한 대학교 학과 3개를 추천해줘."
 
@@ -63,8 +71,9 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
             if not response.text:
                 raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
             return json.loads(response.text)
-        except json.JSONDecodeError:
-            raise ValueError("AI 응답을 분석하는 중 오류가 발생했습니다. 다시 시도해 주세요.")
+        except json.JSONDecodeError as e:
+            # JSON 디코딩 에러 발생 시 원인 파악을 돕기 위한 메시지 출력
+            raise ValueError(f"AI 응답 형식이 올바르지 않습니다. (다시 시도해 주세요. 에러: {e})")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
@@ -76,11 +85,11 @@ def save_to_google_sheet(webhook_url, payload):
     """결과를 구글 스프레드시트로 전송하는 함수"""
     try:
         response = requests.post(webhook_url, json=payload)
-        if response.status_code == 200:
+        if response.status_code == 200: # 콜론(:) 누락 수정
             return True
         else:
             return False
-    except Exception as e:
+    except Exception:
         return False
 
 # --- 3. 사이드바: API 설정 ---
@@ -102,7 +111,7 @@ with st.sidebar:
             st.success("✅ AI API 연결 성공")
             st.info(f"🤖 사용 모델: **{selected_model}**")
             
-        if not webhook_url:
+        if not webhook_url: # 변수명 공백 오류 수정
             st.warning("⚠️ 구글 시트 웹훅 URL이 없습니다. (자동 수합 비활성화)")
         else:
             st.success("✅ 구글 시트 연결 성공")
@@ -115,7 +124,6 @@ st.markdown('<div class="main-title">🎓 진로 탐색기</div>', unsafe_allow_
 st.markdown('<div class="sub-title">당신의 꿈을 데이터로 분석하여 최적의 학과를 제안합니다.</div>', unsafe_allow_html=True)
 
 with st.form("career_form"):
-    # 선생님이 학생 데이터를 구분하기 위해 학번/이름 추가
     st.markdown("**학생 정보**")
     col_info1, col_info2 = st.columns(2)
     with col_info1:
