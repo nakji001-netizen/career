@@ -24,21 +24,28 @@ st.markdown("""
 # --- 2. 로직 함수 ---
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_best_model():
-    """무료 플랜 일일 제한(20회) 방지를 위해 기본적으로 1.5-flash를 우선 타겟팅하거나 안전하게 복귀함"""
+    """무료 플랜 일일 제한(20회) 방지 및 404 에러 예방을 위해 안정적인 최신 모델 명칭을 탐색함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # gemini-3.5는 무료 제한이 하루 20회로 매우 타이트하므로, 안정적인 1.5-flash를 우선 탐색
+        
+        # 전체 가용한 flash 모델 라인업 추출
         flash_models = sorted([
             m.replace("models/", "") 
             for m in available_models 
-            if '1.5-flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
+            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
         ])
-        if flash_models:
+        
+        # 하루 20회 제한이 걸려 있는 3.5 모델을 우회하기 위해 2.5나 1.5 계열이 있다면 최우선 선택
+        preferred_models = [m for m in flash_models if '3.5' not in m]
+        if preferred_models:
+            return preferred_models[-1]
+        elif flash_models:
             return flash_models[-1]
-        return "gemini-1.5-flash"
+            
+        return "gemini-2.5-flash"  # 구버전 명칭으로 인한 404 에러를 방지하는 안정적인 기본값
     except Exception:
-        # API 조회 자체가 제한에 걸려 실패하더라도 앱이 멈추지 않도록 기본값 반환
-        return "gemini-1.5-flash"
+        # API 조회 자체가 제한에 걸려 실패하더라도 앱이 멈추지 않도록 안전한 최신 모델명 반환
+        return "gemini-2.5-flash"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_career_recommendations(model_name, job, interest, hobby, subject):
