@@ -4,7 +4,7 @@ import json
 import time
 import requests
 import threading
-from google.api_core.exceptions import ResourceExhausted  # 429 에러 정밀 감지용
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, InternalServerError
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(
@@ -33,35 +33,28 @@ def get_best_model():
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_career_recommendations(model_name, job, interest, hobby, subject):
-    """API 호출 최적화 및 에러 방어 로직이 적용된 분석 함수"""
-    
-    # JSON 출력 규칙 정의
+    """[초고속 튜닝] 무거운 response_schema 규격을 제거하고 초경량 JSON 모드로 연산 성능 극대화"""
     generation_config = {
         "response_mime_type": "application/json",
-        "response_schema": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "majorName": {"type": "string"},
-                    "introduction": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "curriculum": {"type": "array", "items": {"type": "string"}},
-                    "career": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["majorName", "introduction", "reason", "curriculum", "career"]
-            }
-        },
-        "temperature": 0.3  # [속도 최적화] 낮을수록 창의적 방황을 줄여 답변 생성 속도가 빨라집니다.
+        "temperature": 0.2  # [속도 최적화] 낮을수록 창의적 방황을 줄여 답변 생성 속도가 빨라집니다.
     }
 
-    # [속도 최적화] System Instruction을 활용하여 AI가 간결하고 콤팩트하게만 답변하도록 설정합니다.
-    # 생성하는 글자 수가 줄어들수록 네트워크 전송량 및 디코딩 연산 시간이 줄어들어 무척 빨라집니다.
+    # 스키마 검사 오버헤드 없이 완벽한 JSON 포맷을 유도하는 엄격한 시스템 지침
     system_instruction = (
         "너는 고등학생을 위한 진로 상담 교사야. 질문에 성실히 답변하되, "
-        "학과 설명(introduction)과 추천 이유(reason)는 반드시 핵심만 2~3문장 이내로 콤팩트하게 작성해 줘. "
-        "주요 커리큘럼과 졸업 후 진로는 각각 딱 4개까지만 영양가 있는 핵심 키워드로 뽑아내어 리스트로 전달해 줘. "
-        "쓸데없이 긴 텍스트는 응답 속도를 저하시키므로 간결함이 생명이야."
+        "반드시 아래 기술된 구조를 갖춘 단 하나의 JSON 배열(Array) 형태로만 결과를 반환해야 해. "
+        "마크다운 코드 블록 기호(```json 등)는 앞뒤에 절대 쓰지 말고 오직 순수한 JSON 텍스트만 출력해.\n\n"
+        "[\n"
+        "  {\n"
+        '    "majorName": "추천 학과 이름 (예: 컴퓨터공학과)",\n'
+        '    "introduction": "해당 학과에 대한 명쾌한 소개 (핵심만 2문장 이내)",\n'
+        '    "reason": "학생의 관심 정보를 종합 분석하여 추천하는 핵심적이고 구체적인 이유 (핵심만 2문장 이내)",\n'
+        '    "curriculum": ["가장 상징적인 전공과목 키워드1", "전공과목 키워드2", "전공과목 키워드3", "전공과목 키워드4"],\n'
+        '    "career": ["주요 취업 및 연구 진로 분야1", "진로 분야2", "진로 분야3", "진로 분야4"]\n'
+        "  },\n"
+        "  ... (반드시 규격을 정확히 지켜 총 3개의 학과 추천 정보 포함)\n"
+        "]\n\n"
+        "장황한 서술이나 긴 문장은 생성 지연을 유발하므로 무조건 짧고 강력하게 요약해서 구성해야 함."
     )
 
     model = genai.GenerativeModel(
@@ -76,16 +69,21 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
     for i in range(max_retries):
         try:
             response = model.generate_content(prompt)
-            if not response.text:
-                raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
-            return json.loads(response.text)
+            raw_text = response.text.strip()
             
-        except (ResourceExhausted, Exception) as e:
-            # 유료 계정이므로 429 한도에 도달했을 때 대기 시간은 짧게 가져갑니다 (2초, 4초).
-            if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
-                if i < max_retries - 1:
-                    time.sleep(2 * (i + 1))
-                    continue
+            # 혹시 모를 구글의 마크다운 감싸기 기호 철저히 우회 제거
+            if raw_text.startswith("```json"):
+                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+                
+            return json.loads(raw_text)
+            
+        except (ResourceExhausted, ServiceUnavailable, InternalServerError, Exception) as e:
+            # 503(서버 일시 에러), 500(내부 에러) 발생 시 백오프 자동 초고속 재시도
+            if i < max_retries - 1:
+                time.sleep(1.5 * (i + 1))
+                continue
             raise e
 
 def save_to_google_sheet_background(webhook_url, payload):
@@ -150,31 +148,47 @@ if submit_btn:
     elif not (student_id.strip() and student_name.strip() and job.strip() and interest.strip() and hobby.strip() and subject.strip()):
         st.warning("⚠️ 모든 항목을 입력해주세요.")
     else:
-        with st.spinner(f"AI가 진로를 분석 중입니다..."):
-            try:
-                recommendations = get_career_recommendations(selected_model, job, interest, hobby, subject)
-                st.session_state['recommendations'] = recommendations
-                if webhook_url:
-                    payload = {
-                        "student_id": student_id, "student_name": student_name, "job": job,
-                        "interest": interest, "hobby": hobby, "subject": subject,
-                        "rec1": recommendations[0]['majorName'] if len(recommendations) > 0 else "",
-                        "rec2": recommendations[1]['majorName'] if len(recommendations) > 1 else "",
-                        "rec3": recommendations[2]['majorName'] if len(recommendations) > 2 else ""
-                    }
-                    save_to_google_sheet_background(webhook_url, payload)
-                    st.toast("✅ 결과가 선생님 시트로 전송 중입니다!", icon="🚀")
+        # 체감 대기 지루함을 해소하기 위한 단계별 프로그레스 디자인 연출
+        status_placeholder = st.empty()
+        with status_placeholder.container():
+            st.markdown("⚡ **구글 AI 초고속 전용 채널을 개설하는 중...**")
+            progress_bar = st.progress(15)
+            
+        try:
+            # 상태 메시지 업데이트
+            with status_placeholder.container():
+                st.markdown("🧠 **기초 학문 데이터와 적성 요소를 융합 매핑 분석하는 중...**")
+                progress_bar.progress(45)
                 
-                # 풍선 효과 추가
-                st.balloons()
+            recommendations = get_career_recommendations(selected_model, job, interest, hobby, subject)
+            st.session_state['recommendations'] = recommendations
+            
+            with status_placeholder.container():
+                st.markdown("🚀 **선생님 구글 시트로 보고서를 초고속 백그라운드 전송 중...**")
+                progress_bar.progress(85)
+                
+            if webhook_url:
+                payload = {
+                    "student_id": student_id, "student_name": student_name, "job": job,
+                    "interest": interest, "hobby": hobby, "subject": subject,
+                    "rec1": recommendations[0]['majorName'] if len(recommendations) > 0 else "",
+                    "rec2": recommendations[1]['majorName'] if len(recommendations) > 1 else "",
+                    "rec3": recommendations[2]['majorName'] if len(recommendations) > 2 else ""
+                }
+                save_to_google_sheet_background(webhook_url, payload)
+                st.toast("✅ 결과가 선생님 시트로 전송 중입니다!", icon="🚀")
+            
+            # 상태 바 청소 및 이펙트 효과
+            status_placeholder.empty()
+            st.balloons()
 
-            except Exception as e:
-                error_msg = str(e)
-                # 학생들이 보기 쉬운 친절한 한글 예외 처리 안내문
-                if "429" in error_msg or "quota" in error_msg.lower():
-                    st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 일시적으로 지연되었습니다. **약 30초 후에 [학과 추천받기] 버튼을 다시 한번만 눌러주세요!**")
-                else:
-                    st.error(f"오류 발생: {e}")
+        except Exception as e:
+            status_placeholder.empty()
+            error_msg = str(e)
+            if "429" in error_msg or "quota" in error_msg.lower():
+                st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 일시적으로 지연되었습니다. **약 15초 후에 [학과 추천받기] 버튼을 다시 한번만 눌러주세요!**")
+            else:
+                st.error(f"오류 발생: {e}")
 
 if 'recommendations' in st.session_state:
     data = st.session_state['recommendations']
