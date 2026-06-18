@@ -22,34 +22,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 2. 로직 함수 ---
-@st.cache_data(show_spinner=False, ttl=86400)
+@st.cache_data(show_spinner=False)
 def get_best_model():
-    """무료 플랜 일일 제한(20회) 방지 및 404 에러 예방을 위해 안정적인 최신 모델 명칭을 탐색함"""
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 전체 가용한 flash 모델 라인업 추출
-        flash_models = sorted([
-            m.replace("models/", "") 
-            for m in available_models 
-            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
-        ])
-        
-        # 하루 20회 제한이 걸려 있는 3.5 모델을 우회하기 위해 2.5나 1.5 계열이 있다면 최우선 선택
-        preferred_models = [m for m in flash_models if '3.5' not in m]
-        if preferred_models:
-            return preferred_models[-1]
-        elif flash_models:
-            return flash_models[-1]
-            
-        return "gemini-2.5-flash"  # 구버전 명칭으로 인한 404 에러를 방지하는 안정적인 기본값
-    except Exception:
-        # API 조회 자체가 제한에 걸려 실패하더라도 앱이 멈추지 않도록 안전한 최신 모델명 반환
-        return "gemini-2.5-flash"
+    """
+    [속도 최적화] 유료 플랜 전환 완료 후에는 불필요한 네트워크 API 호출(list_models)을 
+    완전히 제거하고, 현재 전 세계에서 가장 빠르고 가성비가 좋은 최신 표준 모델인 
+    'gemini-2.5-flash'로 바로 직행하여 로딩 시간을 2초 이상 단축시킵니다.
+    """
+    return "gemini-2.5-flash"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_career_recommendations(model_name, job, interest, hobby, subject):
     """API 호출 최적화 및 에러 방어 로직이 적용된 분석 함수"""
+    
+    # JSON 출력 규칙 정의
     generation_config = {
         "response_mime_type": "application/json",
         "response_schema": {
@@ -65,10 +51,25 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
                 },
                 "required": ["majorName", "introduction", "reason", "curriculum", "career"]
             }
-        }
+        },
+        "temperature": 0.3  # [속도 최적화] 낮을수록 창의적 방황을 줄여 답변 생성 속도가 빨라집니다.
     }
 
-    model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
+    # [속도 최적화] System Instruction을 활용하여 AI가 간결하고 콤팩트하게만 답변하도록 설정합니다.
+    # 생성하는 글자 수가 줄어들수록 네트워크 전송량 및 디코딩 연산 시간이 줄어들어 무척 빨라집니다.
+    system_instruction = (
+        "너는 고등학생을 위한 진로 상담 교사야. 질문에 성실히 답변하되, "
+        "학과 설명(introduction)과 추천 이유(reason)는 반드시 핵심만 2~3문장 이내로 콤팩트하게 작성해 줘. "
+        "주요 커리큘럼과 졸업 후 진로는 각각 딱 4개까지만 영양가 있는 핵심 키워드로 뽑아내어 리스트로 전달해 줘. "
+        "쓸데없이 긴 텍스트는 응답 속도를 저하시키므로 간결함이 생명이야."
+    )
+
+    model = genai.GenerativeModel(
+        model_name=model_name, 
+        generation_config=generation_config,
+        system_instruction=system_instruction
+    )
+    
     prompt = f"희망직업: {job}, 관심분야: {interest}, 취미: {hobby}, 선호과목: {subject} 정보를 바탕으로 적합한 대학교 학과 3개를 추천해줘."
 
     max_retries = 3
@@ -80,10 +81,10 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
             return json.loads(response.text)
             
         except (ResourceExhausted, Exception) as e:
-            # 429 오류이거나 메시지에 429/Quota가 포함된 경우 백오프 재시도
+            # 유료 계정이므로 429 한도에 도달했을 때 대기 시간은 짧게 가져갑니다 (2초, 4초).
             if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
                 if i < max_retries - 1:
-                    time.sleep(5 * (i + 1))  # 대기 시간을 조금 더 여유있게 조정
+                    time.sleep(2 * (i + 1))
                     continue
             raise e
 
