@@ -4,6 +4,7 @@ import json
 import time
 import requests
 import threading
+from google.api_core.exceptions import ResourceExhausted  # 429 에러 정밀 감지용
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(
@@ -23,19 +24,21 @@ st.markdown("""
 # --- 2. 로직 함수 ---
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_best_model():
-    """매번 검색하지 않고 하루에 한 번만 최신 모델을 탐색하여 기억함"""
+    """무료 플랜 일일 제한(20회) 방지를 위해 기본적으로 1.5-flash를 우선 타겟팅하거나 안전하게 복귀함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # gemini-3.5는 무료 제한이 하루 20회로 매우 타이트하므로, 안정적인 1.5-flash를 우선 탐색
         flash_models = sorted([
             m.replace("models/", "") 
             for m in available_models 
-            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
+            if '1.5-flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
         ])
         if flash_models:
             return flash_models[-1]
-        return "gemini-1.5-flash-latest"
+        return "gemini-1.5-flash"
     except Exception:
-        return "gemini-1.5-flash-latest"
+        # API 조회 자체가 제한에 걸려 실패하더라도 앱이 멈추지 않도록 기본값 반환
+        return "gemini-1.5-flash"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_career_recommendations(model_name, job, interest, hobby, subject):
@@ -68,14 +71,14 @@ def get_career_recommendations(model_name, job, interest, hobby, subject):
             if not response.text:
                 raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
             return json.loads(response.text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"AI 응답 형식이 올바르지 않습니다. (에러: {e})")
-        except Exception as e:
-            if "429" in str(e) and i < max_retries - 1:
-                time.sleep(3 * (i + 1))
-                continue
-            else:
-                raise e
+            
+        except (ResourceExhausted, Exception) as e:
+            # 429 오류이거나 메시지에 429/Quota가 포함된 경우 백오프 재시도
+            if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
+                if i < max_retries - 1:
+                    time.sleep(5 * (i + 1))  # 대기 시간을 조금 더 여유있게 조정
+                    continue
+            raise e
 
 def save_to_google_sheet_background(webhook_url, payload):
     """결과를 구글 시트로 백그라운드 전송"""
@@ -158,7 +161,12 @@ if submit_btn:
                 st.balloons()
 
             except Exception as e:
-                st.error(f"오류 발생: {e}")
+                error_msg = str(e)
+                # 학생들이 보기 쉬운 친절한 한글 예외 처리 안내문
+                if "429" in error_msg or "quota" in error_msg.lower():
+                    st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 일시적으로 지연되었습니다. **약 30초 후에 [학과 추천받기] 버튼을 다시 한번만 눌러주세요!**")
+                else:
+                    st.error(f"오류 발생: {e}")
 
 if 'recommendations' in st.session_state:
     data = st.session_state['recommendations']
