@@ -206,4 +206,4 @@ if 'recommendations' in st.session_state:
             st.caption(f"{', '.join(rec['career'])}")
         report_text += f"▶ 학과: {rec['majorName']}\n- 이유: {rec['reason']}\n- 진로: {', '.join(rec['career'])}\n\n"
     st.download_button(label="📄 결과 보고서 다운로드", data=report_text, file_name="career_report.txt", use_container_width=True)
-# Last Heartbeat: Wed Jul  8 01:21:27 UTC 2026
+# Last Heartbeat: Wed Jul  8 07:20:32 UTC 2026
